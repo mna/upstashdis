@@ -1,3 +1,5 @@
+// Package upstashdis provides a redigo-compatible connection for the Upstash
+// Redis REST API interface.
 package upstashdis
 
 import (
@@ -10,6 +12,8 @@ import (
 	"github.com/gomodule/redigo/redis"
 )
 
+// HTTPDoer defines the method required for an HTTP client. The
+// *net/http/Client standard library type satisfies this interface.
 type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -19,19 +23,42 @@ type restResult struct {
 	Result interface{} `json:"result"`
 }
 
+// Client is an Upstash Redis REST client.
 type Client struct {
-	BaseURL        string
-	APIToken       string
-	HTTPClient     HTTPDoer
+	// BaseURL is the base URL of the Upstash Redis REST API.
+	BaseURL string
+	// APIToken is the Upstash Redis REST API token used for authentication.
+	APIToken string
+	// HTTPClient is the HTTP client to use to make the REST API requests. If
+	// nil, http.DefaultClient is used.
+	HTTPClient HTTPDoer
+	// NewRequestFunc is the function used to create the HTTP Request for each
+	// REST API request. If nil, http.NewRequest is used.
 	NewRequestFunc func(method, url string, body io.Reader) (*http.Request, error)
 }
 
+// NewConn creates a redigo-compatible Redis connection that uses the Upstash
+// client internally to execute commands using the REST API. Since this is a
+// connection-less mode of execution, NewConn cannot fail and always returns a
+// valid connection instantly. Hence, there is no point in using a connection
+// pool with those "connections" - there is no connection overhead, and the
+// small memory allocation of a connection is unlikely to have much of an
+// effect.
+//
+// The concurrency characteristics of the returned connection are different
+// than the ones for standard redigo connections [1]. The connection is not
+// safe to use concurrently in any case, for any of its methods.
+//
+// While this may seem like an important restriction, in practice it is not -
+// the Upstash Redis REST API does not support subscribing and listening to
+// pub-sub channels [2], the main use-case for concurrent Send-Flush and Receive
+// calls.
+//
+//     [1]: https://pkg.go.dev/github.com/gomodule/redigo/redis#hdr-Concurrency
+//     [2]: https://docs.upstash.com/redis/features/restapi#rest---redis-api-compatibility
+//
 func (c *Client) NewConn() redis.Conn {
 	return &conn{client: c}
-}
-
-func (c *Client) Dial() (redis.Conn, error) {
-	return &conn{client: c}, nil
 }
 
 var errClosed = errors.New("upstashdis: closed")
@@ -61,7 +88,7 @@ func (c *conn) Err() error {
 
 // Do executes a command, waits for its result and returns it. If "" is
 // provided as cmd, it just executes the commands already buffered via calls to
-// Send.
+// Send, if any.
 func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
 	if err := c.Send(cmd, args...); err != nil {
 		return nil, err
@@ -73,6 +100,10 @@ func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
 }
 
 func (c *conn) Send(cmd string, args ...interface{}) error {
+	if cmd == "" && len(args) == 0 {
+		return nil
+	}
+
 	// serialize and buffer the command
 	new := make([]interface{}, len(args)+1)
 	new[0] = cmd
@@ -93,6 +124,7 @@ func (c *conn) Receive() (interface{}, error) {
 	return nil, nil
 }
 
+// adjusted from redigo's internal helper function.
 func writeArg(arg interface{}, argumentTypeOK bool) interface{} {
 	switch arg := arg.(type) {
 	case string:
