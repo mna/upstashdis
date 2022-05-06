@@ -116,6 +116,9 @@ func (c *conn) Send(cmd string, args ...interface{}) error {
 
 func (c *conn) Flush() error {
 	// create the request (pipeline if > 1), make the call
+	if len(c.req) == 0 {
+		return nil
+	}
 	return nil
 }
 
