@@ -4,10 +4,12 @@ package upstashdis
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 
 	"github.com/gomodule/redigo/redis"
 )
@@ -64,11 +66,10 @@ func (c *Client) NewConn() redis.Conn {
 var errClosed = errors.New("upstashdis: closed")
 
 type conn struct {
-	client  *Client
-	req     [][]interface{}
-	res     []restResult
-	httpRes *http.Response
-	err     error
+	client *Client
+	req    [][]interface{}
+	res    []restResult
+	err    error
 }
 
 // Close releases the connection, making it unusable for future requests.
@@ -89,6 +90,14 @@ func (c *conn) Err() error {
 // Do executes a command, waits for its result and returns it. If "" is
 // provided as cmd, it just executes the commands already buffered via calls to
 // Send, if any.
+//
+// The returned value depends on the use:
+//     * If a cmd is specified, Do executes all pending commands and returns
+//     an error if any failed, or the result of the last command othewise.
+//     * If cmd == "", Do executes all pending commands and returns a slice of
+//     all corresponding results, including errors.
+//
+// This is consistent with redigo's behaviour.
 func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
 	if err := c.Send(cmd, args...); err != nil {
 		return nil, err
@@ -96,9 +105,14 @@ func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
 	if err := c.Flush(); err != nil {
 		return nil, err
 	}
+
+	// TODO: if cmd == "", collect all results, otherwise process all results
+	// and return only the last, with error if any failed.
 	return c.Receive()
 }
 
+// Send adds the command to the pending executions. It is a no-op if cmd == ""
+// and no arguments are provided.
 func (c *conn) Send(cmd string, args ...interface{}) error {
 	if cmd == "" && len(args) == 0 {
 		return nil
@@ -115,10 +129,72 @@ func (c *conn) Send(cmd string, args ...interface{}) error {
 }
 
 func (c *conn) Flush() error {
+	var (
+		body     bytes.Buffer
+		pipeline bool
+		err      error
+	)
+
 	// create the request (pipeline if > 1), make the call
-	if len(c.req) == 0 {
+	switch len(c.req) {
+	case 0:
+		// no-op
 		return nil
+	case 1:
+		// single command
+		err = json.NewEncoder(&body).Encode(c.req[0])
+	default:
+		// pipeline
+		err = json.NewEncoder(&body).Encode(c.req)
+		pipeline = true
 	}
+	c.req = c.req[:0]
+
+	if err != nil {
+		return err
+	}
+}
+
+func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
+	httpCli := c.client.HTTPClient
+	if httpCli == nil {
+		httpCli = http.DefaultClient
+	}
+
+	newReq := c.client.NewRequestFunc
+	if newReq == nil {
+		newReq = http.NewRequest
+	}
+
+	url := c.client.BaseURL
+	if pipeline {
+		url = path.Join(url, "pipeline")
+	}
+	req, err := newReq("POST", url, body)
+	if err != nil {
+		return err
+	}
+
+	res, err := httpCli.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		if len(b) == 0 {
+			b = []byte(res.Status)
+		}
+		return fmt.Errorf("[%d]: %s", res.StatusCode, string(b))
+	}
+
+	var results []restResult
+	if err := json.NewDecoder(res.Body).Decode(&results); err != nil {
+		return err
+	}
+
+	c.res = results
 	return nil
 }
 
