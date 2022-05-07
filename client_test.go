@@ -16,19 +16,25 @@ func TestUpstash(t *testing.T) {
 	}
 
 	cli := &Client{BaseURL: url, APIToken: tok}
+	conn := cli.NewConn()
+	defer conn.Close()
+
 	t.Run("empty Do", func(t *testing.T) {
-		conn := cli.NewConn()
-		defer conn.Close()
 		res, err := conn.Do("")
 		require.NoError(t, err)
 		require.Nil(t, res)
 	})
 
 	t.Run("simple Do", func(t *testing.T) {
-		conn := cli.NewConn()
-		defer conn.Close()
 		res, err := redis.String(conn.Do("ECHO", "a"))
 		require.NoError(t, err)
 		require.Equal(t, "a", res)
+	})
+
+	t.Run("fail Do", func(t *testing.T) {
+		res, err := conn.Do("NOTACMD", "a")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "ERR Command is not available")
+		require.Nil(t, res)
 	})
 }

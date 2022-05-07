@@ -222,6 +222,12 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 512))
 		if len(b) == 0 {
 			b = []byte(res.Status)
+		} else {
+			// try to decode the body as JSON into a restResult with an error value
+			var pld restResult
+			if err := json.Unmarshal(b, &pld); err == nil && pld.Error != "" {
+				return redis.Error(pld.Error)
+			}
 		}
 		return fmt.Errorf("[%d]: %s", res.StatusCode, string(b))
 	}
