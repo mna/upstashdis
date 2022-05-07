@@ -128,6 +128,9 @@ func (c *conn) Send(cmd string, args ...interface{}) error {
 	return nil
 }
 
+// Flush sends any pending commands, returning an error if it fails to marshal
+// the commands or send the request - including if the server returns a non-200
+// status code.
 func (c *conn) Flush() error {
 	var (
 		body     bytes.Buffer
@@ -153,6 +156,8 @@ func (c *conn) Flush() error {
 	if err != nil {
 		return err
 	}
+
+	return c.makeRequest(&body, pipeline)
 }
 
 func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
@@ -198,9 +203,19 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 	return nil
 }
 
+// Receive returns the next available result. If the result is an error, it
+// returns nil and the error as a redigo redis.Error.
 func (c *conn) Receive() (interface{}, error) {
-	// wait for the response, if a pipeline return the next response
-	return nil, nil
+	if len(c.res) == 0 {
+		return nil, errors.New("no pending result to receive")
+	}
+
+	res := c.res[0]
+	c.res = c.res[1:]
+	if res.Error != "" {
+		return nil, redis.Error(res.Error)
+	}
+	return res.Result, nil
 }
 
 // adjusted from redigo's internal helper function.
