@@ -56,6 +56,15 @@ type Client struct {
 // pub-sub channels [2], the main use-case for concurrent Send-Flush and Receive
 // calls.
 //
+// The connection does not implement redigo's ConnWithContext since it does not
+// make sense to have a context time-out for Receive (as the request is already
+// completed by the time Receive is called) and for Do, it is easy to add a
+// context via the Client.NewRequestFunc if needed.
+//
+// Similarly, the connection does not implement redigo's ConnWithContext, as
+// the main use-case is for blocking commands such as BLPOP and those are not
+// supported by the Upstash Redis REST API.
+//
 //     [1]: https://pkg.go.dev/github.com/gomodule/redigo/redis#hdr-Concurrency
 //     [2]: https://docs.upstash.com/redis/features/restapi#rest---redis-api-compatibility
 //
@@ -105,10 +114,30 @@ func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
 	if err := c.Flush(); err != nil {
 		return nil, err
 	}
+	if len(c.res) == 0 {
+		return nil, nil
+	}
 
-	// TODO: if cmd == "", collect all results, otherwise process all results
-	// and return only the last, with error if any failed.
-	return c.Receive()
+	var firstErr error
+	results := make([]interface{}, len(c.res))
+	for i, r := range c.res {
+		if r.Error != "" {
+			resErr := redis.Error(r.Error)
+			if firstErr == nil {
+				firstErr = resErr
+			}
+			results[i] = resErr
+			continue
+		}
+
+		results[i] = r.Result
+	}
+
+	if cmd == "" {
+		return results, nil
+	}
+
+	return results[len(results)-1], firstErr
 }
 
 // Send adds the command to the pending executions. It is a no-op if cmd == ""
@@ -179,6 +208,9 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 	if err != nil {
 		return err
 	}
+	if req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+c.client.APIToken)
+	}
 
 	res, err := httpCli.Do(req)
 	if err != nil {
@@ -195,8 +227,16 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 	}
 
 	var results []restResult
-	if err := json.NewDecoder(res.Body).Decode(&results); err != nil {
-		return err
+	if pipeline {
+		if err := json.NewDecoder(res.Body).Decode(&results); err != nil {
+			return err
+		}
+	} else {
+		var result restResult
+		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+			return err
+		}
+		results = []restResult{result}
 	}
 
 	c.res = results
