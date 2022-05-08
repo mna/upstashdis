@@ -37,4 +37,27 @@ func TestUpstash(t *testing.T) {
 		require.Contains(t, err.Error(), "ERR Command is not available")
 		require.Nil(t, res)
 	})
+
+	t.Run("pipeline Send Flush Receive", func(t *testing.T) {
+		err := conn.Send("SET", "a", 1)
+		require.NoError(t, err)
+		err = conn.Send("APPEND", "a", "2")
+		require.NoError(t, err)
+		err = conn.Send("INCR", "a")
+		require.NoError(t, err)
+		err = conn.Flush()
+		require.NoError(t, err)
+
+		res1, err := redis.String(conn.Receive())
+		require.NoError(t, err)
+		require.Equal(t, "OK", res1)
+
+		res2, err := redis.Int(conn.Receive())
+		require.NoError(t, err)
+		require.Equal(t, 2, res2)
+
+		res3, err := redis.Int(conn.Receive())
+		require.NoError(t, err)
+		require.Equal(t, 13, res3)
+	})
 }

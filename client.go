@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 
 	"github.com/gomodule/redigo/redis"
@@ -200,11 +201,16 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 		newReq = http.NewRequest
 	}
 
-	url := c.client.BaseURL
+	surl := c.client.BaseURL
 	if pipeline {
-		url = path.Join(url, "pipeline")
+		purl, err := url.Parse(surl)
+		if err != nil {
+			return err
+		}
+		purl.Path = path.Join(purl.Path, "pipeline")
+		surl = purl.String()
 	}
-	req, err := newReq("POST", url, body)
+	req, err := newReq("POST", surl, body)
 	if err != nil {
 		return err
 	}
@@ -245,6 +251,8 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 		results = []restResult{result}
 	}
 
+	// adjust results types - Redis returns floats as strings, but Go will
+	// unmarshal integers as float64. Convert them to integers.
 	c.res = results
 	return nil
 }
