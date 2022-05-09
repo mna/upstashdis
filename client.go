@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"path"
 
 	"github.com/gomodule/redigo/redis"
 )
@@ -30,9 +28,13 @@ type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-type restResult struct {
-	Error  string      `json:"error"`
-	Result interface{} `json:"result"`
+// Result is the struct used to unmarshal raw results for a command execution.
+// The Error string is unmarshaled, while the successful result is stored as
+// a json.RawMessage until it gets unmarshaled into a destination value in a
+// call to Exec or ExecOne, or manually by the caller after ExecRaw.
+type Result struct {
+	Error  string          `json:"error"`
+	Result json.RawMessage `json:"result"`
 }
 
 // Client is an Upstash Redis REST client.
@@ -57,6 +59,19 @@ type Client struct {
 	req [][]interface{}
 }
 
+// Error represents an error returned by Redis.
+type Error struct {
+	// Message is the full error message, including its Kind, if present.
+	Message string
+	// Kind is the error kind as used by Redis as a convention. This is the first
+	// word in the error message, and all in uppercase. It may be empty.
+	Kind string
+	// PipelineIndex is the index of the command that returned this error in the
+	// pipeline, 0 if the command was executed without pipeline, and -1 if the
+	// error did not originate from a command execution.
+	PipelineIndex int
+}
+
 // Send queues a new command to be executed when Exec is called.
 func (c *Client) Send(cmd string, args ...interface{}) error {
 	if cmd == "" {
@@ -79,135 +94,45 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 // not guaranteed to execute atomically.
 //
 // The results are unmarshalled into the provided dst values. At most len(dst)
-// results are unmarshalled, and an error is returned if len(dst) > number of
+// results are unmarshaled, and an error is returned if len(dst) > number of
 // results. If any result is an error, an error is returned but any remaining
-// results are unmashalled.
+// results are unmashalled. If more than one result is an error, only the first
+// one is returned. If len(dst) < number of results, the remaining results are
+// discarded.
+//
+// The error returned might be of type *Error. You may inspect its fields for
+// more information about what failed after obtaining its typed value with
+// errors.As. It can also be of a different type if e.g. the request failed due
+// to a network error.
 func (c *Client) Exec(dst ...interface{}) error {
 	return nil
 }
 
+// ExecOne executes the provided command and unmarshals its result into dst. If
+// there were commands already queued for execution, they will be executed in a
+// pipeline with the provided command as last, but only the result of that last
+// command will be returned - even if previous commands resulted in errors.
+//
+// In other words, it executes all pending commands and discards their results,
+// before executing the specified command and returning its result - either as
+// the returned error if it failed, or unmarshaled into dst if it succeeded.
 func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
 	return nil
 }
 
-// NewConn creates a redigo-compatible Redis connection that uses the Upstash
-// client internally to execute commands using the REST API. Since this is a
-// connection-less mode of execution, NewConn cannot fail and always returns a
-// valid connection instantly. Hence, there is no point in using a connection
-// pool with those "connections" - there is no connection overhead, and the
-// small memory allocation of a connection is unlikely to have much of an
-// effect.
+// ExecRaw executes all commands queued by calls to Send and returns a slice
+// corresponding to the results of each command. Unlike Exec and ExecOne, it
+// does not return an error if the result is an error - it stores all results
+// in the returned slice, returning an error only if the request itself failed,
+// e.g. due to a network error.
 //
-// The concurrency characteristics of the returned connection are different
-// than the ones for standard redigo connections [1]. The connection is not
-// safe to use concurrently in any case, for any of its methods.
-//
-// While this may seem like an important restriction, in practice it is not -
-// the Upstash Redis REST API does not support subscribing and listening to
-// pub-sub channels [2], the main use-case for concurrent Send-Flush and Receive
-// calls.
-//
-// The connection does not implement redigo's ConnWithContext since it does not
-// make sense to have a context time-out for Receive (as the request is already
-// completed by the time Receive is called) and for Do, it is easy to add a
-// context via the Client.NewRequestFunc if needed.
-//
-// Similarly, the connection does not implement redigo's ConnWithContext, as
-// the main use-case is for blocking commands such as BLPOP and those are not
-// supported by the Upstash Redis REST API.
-//
-//     [1]: https://pkg.go.dev/github.com/gomodule/redigo/redis#hdr-Concurrency
-//     [2]: https://docs.upstash.com/redis/features/restapi#rest---redis-api-compatibility
-//
-func (c *Client) NewConn() redis.Conn {
-	return &conn{client: c}
+// This can be used if the caller needs to know precisely all commands that
+// failed in a pipeline (as Exec returns only the first error encountered).
+func (c *Client) ExecRaw() ([]*Result, error) {
+	return nil, nil
 }
 
-var errClosed = errors.New("upstashdis: closed")
-
-type conn struct {
-	client *Client
-	req    [][]interface{}
-	res    []restResult
-	err    error
-}
-
-// Close releases the connection, making it unusable for future requests.
-// Subsequent calls to Close will return an error indicating that it is closed.
-func (c *conn) Close() error {
-	if c.err != nil {
-		return c.err
-	}
-	c.err = errClosed
-	return nil
-}
-
-// Err returns the error that terminated the connection.
-func (c *conn) Err() error {
-	return c.err
-}
-
-// Do executes a command, waits for its result and returns it. If "" is
-// provided as cmd, it just executes the commands already buffered via calls to
-// Send, if any.
-//
-// The returned value depends on the use:
-//     * If a cmd is specified, Do executes all pending commands and returns
-//     an error if any failed, or the result of the last command othewise.
-//     * If cmd == "", Do executes all pending commands and returns a slice of
-//     all corresponding results, including errors.
-//
-// This is consistent with redigo's behaviour.
-func (c *conn) Do(cmd string, args ...interface{}) (interface{}, error) {
-	if err := c.Send(cmd, args...); err != nil {
-		return nil, err
-	}
-	if err := c.Flush(); err != nil {
-		return nil, err
-	}
-	if len(c.res) == 0 {
-		return nil, nil
-	}
-
-	var firstErr error
-	results := make([]interface{}, len(c.res))
-	for i, r := range c.res {
-		if r.Error != "" {
-			resErr := redis.Error(r.Error)
-			if firstErr == nil {
-				firstErr = resErr
-			}
-			results[i] = resErr
-			continue
-		}
-
-		results[i] = r.Result
-	}
-
-	if cmd == "" {
-		return results, nil
-	}
-
-	return results[len(results)-1], firstErr
-}
-
-// Send adds the command to the pending executions. It is a no-op if cmd == ""
-// and no arguments are provided.
-func (c *conn) Send(cmd string, args ...interface{}) error {
-	if cmd == "" && len(args) == 0 {
-		return nil
-	}
-
-	// serialize and buffer the command
-	new := make([]interface{}, len(args)+1)
-	new[0] = cmd
-	for i, arg := range args {
-		new[i+1] = writeArg(arg, true)
-	}
-	c.req = append(c.req, new)
-	return nil
-}
-
+/*
 // Flush sends any pending commands, returning an error if it fails to marshal
 // the commands or send the request - including if the server returns a non-200
 // status code.
@@ -306,21 +231,7 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 	c.res = results
 	return nil
 }
-
-// Receive returns the next available result. If the result is an error, it
-// returns nil and the error as a redigo redis.Error.
-func (c *conn) Receive() (interface{}, error) {
-	if len(c.res) == 0 {
-		return nil, errors.New("no pending result to receive")
-	}
-
-	res := c.res[0]
-	c.res = c.res[1:]
-	if res.Error != "" {
-		return nil, redis.Error(res.Error)
-	}
-	return res.Result, nil
-}
+*/
 
 // adjusted from redigo's internal helper function.
 func writeArg(arg interface{}, argumentTypeOK bool) interface{} {
