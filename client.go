@@ -1,5 +1,5 @@
-// Package upstashdis provides a redigo-compatible connection for the Upstash
-// Redis REST API interface.
+// Package upstashdis provides a client for the Upstash Redis REST API
+// interface.
 package upstashdis
 
 import (
@@ -14,6 +14,15 @@ import (
 
 	"github.com/gomodule/redigo/redis"
 )
+
+// Argument allows arbitrary values to encode themselves as a valid argument
+// value for a Redis command. This is compatible with redigo's redis.Argument
+// interface.
+type Argument interface {
+	// RedisArg returns a value to be encoded as a bulk string.
+	// Implementations should typically return a []byte or string.
+	RedisArg() interface{}
+}
 
 // HTTPDoer defines the method required for an HTTP client. The
 // *net/http/Client standard library type satisfies this interface.
@@ -30,14 +39,55 @@ type restResult struct {
 type Client struct {
 	// BaseURL is the base URL of the Upstash Redis REST API.
 	BaseURL string
+
 	// APIToken is the Upstash Redis REST API token used for authentication.
 	APIToken string
+
 	// HTTPClient is the HTTP client to use to make the REST API requests. If
 	// nil, http.DefaultClient is used.
 	HTTPClient HTTPDoer
+
 	// NewRequestFunc is the function used to create the HTTP Request for each
-	// REST API request. If nil, http.NewRequest is used.
+	// REST API request. If the returned request has an Authorization header set,
+	// it will be used as-is, otherwise the header is set with the APIToken as
+	// Bearer value. If NewRequestFunc is nil, http.NewRequest is used.
 	NewRequestFunc func(method, url string, body io.Reader) (*http.Request, error)
+
+	// the pending requests to execute
+	req [][]interface{}
+}
+
+// Send queues a new command to be executed when Exec is called.
+func (c *Client) Send(cmd string, args ...interface{}) error {
+	if cmd == "" {
+		return errors.New("upstashdis: empty command")
+	}
+
+	// serialize and buffer the command
+	new := make([]interface{}, len(args)+1)
+	new[0] = cmd
+	for i, arg := range args {
+		new[i+1] = writeArg(arg, true)
+	}
+	c.req = append(c.req, new)
+	return nil
+}
+
+// Exec executes all commands queued by calls to Send. If a single command is
+// queued, a standard call is done, otherwise all commands are executed as a
+// pipeline call. Note that with the Upstash Redis REST API, a pipeline call is
+// not guaranteed to execute atomically.
+//
+// The results are unmarshalled into the provided dst values. At most len(dst)
+// results are unmarshalled, and an error is returned if len(dst) > number of
+// results. If any result is an error, an error is returned but any remaining
+// results are unmashalled.
+func (c *Client) Exec(dst ...interface{}) error {
+	return nil
+}
+
+func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
+	return nil
 }
 
 // NewConn creates a redigo-compatible Redis connection that uses the Upstash
