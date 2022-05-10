@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"strings"
 
 	"github.com/gomodule/redigo/redis"
 )
@@ -72,6 +75,19 @@ type Error struct {
 	PipelineIndex int
 }
 
+// Error returns the error message.
+func (e *Error) Error() string {
+	return e.Message
+}
+
+func newError(msg string, ix int) *Error {
+	err := &Error{Message: msg, PipelineIndex: ix}
+	if kind, _, ok := strings.Cut(msg, " "); ok {
+		err.Kind = kind
+	}
+	return err
+}
+
 // Send queues a new command to be executed when Exec is called.
 func (c *Client) Send(cmd string, args ...interface{}) error {
 	if cmd == "" {
@@ -100,12 +116,38 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 // one is returned. If len(dst) < number of results, the remaining results are
 // discarded.
 //
-// The error returned might be of type *Error. You may inspect its fields for
-// more information about what failed after obtaining its typed value with
-// errors.As. It can also be of a different type if e.g. the request failed due
-// to a network error.
+// The error returned will be of type *Error if it is a command that failed.
+// You may inspect its fields for more information about what failed after
+// obtaining its typed value with errors.As. It can also be of a different type
+// if e.g. the request failed due to a network error.
 func (c *Client) Exec(dst ...interface{}) error {
-	return nil
+	res, err := c.exec()
+	if err != nil {
+		return err
+	}
+
+	min := len(res)
+	if len(dst) < min {
+		min = len(dst)
+	}
+	if len(dst) > len(res) {
+		return errors.New("upstashdis: too many destination values")
+	}
+
+	var firstErr error
+	for i := 0; i < min; i++ {
+		r, d := res[i], dst[i]
+		if r.Error != "" && firstErr == nil {
+			firstErr = newError(r.Error, i)
+			continue
+		}
+		if d != nil {
+			if err := json.Unmarshal(r.Result, d); err != nil {
+				return err
+			}
+		}
+	}
+	return firstErr
 }
 
 // ExecOne executes the provided command and unmarshals its result into dst. If
@@ -117,7 +159,25 @@ func (c *Client) Exec(dst ...interface{}) error {
 // before executing the specified command and returning its result - either as
 // the returned error if it failed, or unmarshaled into dst if it succeeded.
 func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
-	return nil
+	if err := c.Send(cmd, args...); err != nil {
+		return err
+	}
+
+	res, err := c.exec()
+	if err != nil {
+		return err
+	}
+
+	// skip all but the last result
+	last := res[len(res)-1]
+	if last.Error != "" {
+		return newError(last.Error, 0) // index is 0 because it behaves as if the rest of the pipeline did not exist
+	}
+
+	if dst == nil {
+		return nil
+	}
+	return json.Unmarshal(last.Result, dst)
 }
 
 // ExecRaw executes all commands queued by calls to Send and returns a slice
@@ -129,14 +189,10 @@ func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error
 // This can be used if the caller needs to know precisely all commands that
 // failed in a pipeline (as Exec returns only the first error encountered).
 func (c *Client) ExecRaw() ([]*Result, error) {
-	return nil, nil
+	return c.exec()
 }
 
-/*
-// Flush sends any pending commands, returning an error if it fails to marshal
-// the commands or send the request - including if the server returns a non-200
-// status code.
-func (c *conn) Flush() error {
+func (c *Client) exec() ([]*Result, error) {
 	var (
 		body     bytes.Buffer
 		pipeline bool
@@ -146,8 +202,7 @@ func (c *conn) Flush() error {
 	// create the request (pipeline if > 1), make the call
 	switch len(c.req) {
 	case 0:
-		// no-op
-		return nil
+		return nil, errors.New("upstashdis: no command to execute")
 	case 1:
 		// single command
 		err = json.NewEncoder(&body).Encode(c.req[0])
@@ -159,43 +214,43 @@ func (c *conn) Flush() error {
 	c.req = c.req[:0]
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return c.makeRequest(&body, pipeline)
 }
 
-func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
-	httpCli := c.client.HTTPClient
+func (c *Client) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) {
+	httpCli := c.HTTPClient
 	if httpCli == nil {
 		httpCli = http.DefaultClient
 	}
 
-	newReq := c.client.NewRequestFunc
+	newReq := c.NewRequestFunc
 	if newReq == nil {
 		newReq = http.NewRequest
 	}
 
-	surl := c.client.BaseURL
+	surl := c.BaseURL
 	if pipeline {
 		purl, err := url.Parse(surl)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		purl.Path = path.Join(purl.Path, "pipeline")
 		surl = purl.String()
 	}
 	req, err := newReq("POST", surl, body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if req.Header.Get("Authorization") == "" {
-		req.Header.Set("Authorization", "Bearer "+c.client.APIToken)
+		req.Header.Set("Authorization", "Bearer "+c.APIToken)
 	}
 
 	res, err := httpCli.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer res.Body.Close()
 
@@ -204,34 +259,34 @@ func (c *conn) makeRequest(body io.Reader, pipeline bool) error {
 		if len(b) == 0 {
 			b = []byte(res.Status)
 		} else {
-			// try to decode the body as JSON into a restResult with an error value
-			var pld restResult
+			// try to decode the body as JSON into a Result with an error value
+			var pld Result
 			if err := json.Unmarshal(b, &pld); err == nil && pld.Error != "" {
-				return redis.Error(pld.Error)
+				var ix int
+				if pipeline {
+					ix = -1 // pipeline errors still return 200, so unrelated to a command if it is a pipeline
+				}
+				return nil, newError(pld.Error, ix)
 			}
 		}
-		return fmt.Errorf("[%d]: %s", res.StatusCode, string(b))
+		return nil, fmt.Errorf("[%d]: %s", res.StatusCode, string(b))
 	}
 
-	var results []restResult
+	var results []*Result
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
 	if pipeline {
-		if err := json.NewDecoder(res.Body).Decode(&results); err != nil {
-			return err
-		}
+		err = json.Unmarshal(raw, &results)
 	} else {
-		var result restResult
-		if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
-			return err
+		var result Result
+		if err = json.Unmarshal(raw, &result); err == nil {
+			results = []*Result{&result}
 		}
-		results = []restResult{result}
 	}
-
-	// adjust results types - Redis returns floats as strings, but Go will
-	// unmarshal integers as float64. Convert them to integers.
-	c.res = results
-	return nil
+	return results, err
 }
-*/
 
 // adjusted from redigo's internal helper function.
 func writeArg(arg interface{}, argumentTypeOK bool) interface{} {
