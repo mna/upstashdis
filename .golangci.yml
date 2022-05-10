@@ -1,27 +1,27 @@
 linters:
   disable-all: true
   enable:
-    #- deadcode
-    #- depguard
-    #- errcheck
-    #- gci
-    #- gochecknoinits
-    #- gofmt
-    #- gosec
-    #- gosimple
-    #- govet
-    #- importas
-    #- ineffassign
-    #- misspell
-    #- nakedret
-    #- prealloc
+    - deadcode
+    - depguard
+    - errcheck
+    - gci
+    - gochecknoinits
+    - gofmt
+    - gosec
+    - gosimple
+    - govet
+    - importas
+    - ineffassign
+    - misspell
+    - nakedret
+    - prealloc
     - revive
-    #- staticcheck
-    #- structcheck
+    - staticcheck
+    - structcheck
     - typecheck
-    #- unconvert
-    #- unused
-    #- varcheck
+    - unconvert
+    - unused
+    - varcheck
 
 linters-settings:
   revive:
@@ -53,4 +53,3 @@ linters-settings:
       - name: superfluous-else
       - name: unused-parameter
       - name: unreachable-code
-      - name: redefines-builtin-id

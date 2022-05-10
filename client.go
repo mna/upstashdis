@@ -12,8 +12,6 @@ import (
 	"net/url"
 	"path"
 	"strings"
-
-	"github.com/gomodule/redigo/redis"
 )
 
 // Argument allows arbitrary values to encode themselves as a valid argument
@@ -109,10 +107,10 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 // pipeline call. Note that with the Upstash Redis REST API, a pipeline call is
 // not guaranteed to execute atomically.
 //
-// The results are unmarshalled into the provided dst values. At most len(dst)
+// The results are unmarshaled into the provided dst values. At most len(dst)
 // results are unmarshaled, and an error is returned if len(dst) > number of
 // results. If any result is an error, an error is returned but any remaining
-// results are unmashalled. If more than one result is an error, only the first
+// results are unmarshaled. If more than one result is an error, only the first
 // one is returned. If len(dst) < number of results, the remaining results are
 // discarded.
 //
@@ -309,7 +307,7 @@ func writeArg(arg interface{}, argumentTypeOK bool) interface{} {
 		}
 	case nil:
 		return ""
-	case redis.Argument:
+	case Argument:
 		if argumentTypeOK {
 			return writeArg(arg.RedisArg(), false)
 		}

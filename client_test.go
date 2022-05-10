@@ -1,6 +1,7 @@
 package upstashdis
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -22,6 +23,13 @@ func TestUpstash(t *testing.T) {
 		require.Contains(t, err.Error(), "empty command")
 	})
 
+	t.Run("empty ExecOne", func(t *testing.T) {
+		var got string
+		err := cli.ExecOne(&got, "")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "empty command")
+	})
+
 	t.Run("simple ExecOne", func(t *testing.T) {
 		var got string
 		err := cli.ExecOne(&got, "ECHO", "a")
@@ -33,6 +41,10 @@ func TestUpstash(t *testing.T) {
 		err := cli.ExecOne(nil, "NOTACMD", "a")
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "ERR Command is not available")
+		var rerr *Error
+		require.True(t, errors.As(err, &rerr))
+		require.Equal(t, "ERR", rerr.Kind)
+		require.Equal(t, 0, rerr.PipelineIndex)
 	})
 
 	t.Run("ExecOne with queued", func(t *testing.T) {
@@ -51,6 +63,18 @@ func TestUpstash(t *testing.T) {
 		err = cli.ExecOne(&got, "ECHO", "b")
 		require.NoError(t, err)
 		require.Equal(t, "b", got)
+	})
+
+	t.Run("ExecOne fail with failed queued", func(t *testing.T) {
+		var got string
+		err := cli.Send("NOTACMD", "a")
+		require.NoError(t, err)
+		err = cli.ExecOne(&got, "STILLNOTACMD", "b")
+		require.Error(t, err)
+		var rerr *Error
+		require.True(t, errors.As(err, &rerr))
+		require.Equal(t, "ERR", rerr.Kind)
+		require.Equal(t, 0, rerr.PipelineIndex)
 	})
 
 	/*
