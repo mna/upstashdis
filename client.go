@@ -112,7 +112,7 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 // results. If any result is an error, an error is returned but any remaining
 // results are unmarshaled. If more than one result is an error, only the first
 // one is returned. If len(dst) < number of results, the remaining results are
-// discarded.
+// discarded. A nil dst value simply ignores that corresponding result.
 //
 // The error returned will be of type *Error if it is a command that failed.
 // You may inspect its fields for more information about what failed after
@@ -139,7 +139,7 @@ func (c *Client) Exec(dst ...interface{}) error {
 			firstErr = newError(r.Error, i)
 			continue
 		}
-		if d != nil {
+		if d != nil && r.Result != nil {
 			if err := json.Unmarshal(r.Result, d); err != nil {
 				return err
 			}
@@ -155,7 +155,8 @@ func (c *Client) Exec(dst ...interface{}) error {
 //
 // In other words, it executes all pending commands and discards their results,
 // before executing the specified command and returning its result - either as
-// the returned error if it failed, or unmarshaled into dst if it succeeded.
+// the returned error if it failed, or unmarshaled into dst if it succeeded. If
+// dst is nil, the successful result is ignored.
 func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
 	if err := c.Send(cmd, args...); err != nil {
 		return err
