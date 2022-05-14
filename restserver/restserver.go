@@ -3,9 +3,11 @@ package restserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // Conn defines the methods required for a redis connection. It is a subset
@@ -22,10 +24,19 @@ type Conn interface {
 type Server struct {
 	APIToken    string
 	GetConnFunc func(context.Context) Conn
+
+	mu         sync.Mutex // protects the rest token map
+	restTokens map[string]auth
+}
+
+type auth struct {
+	Username string
+	Password string
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.authenticate(requestToken(r)) {
+	userPass, ok := s.authenticate(requestToken(r))
+	if !ok {
 		reply(w, errorResult{"Unauthorized"}, http.StatusUnauthorized)
 		return
 	}
@@ -36,6 +47,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// read the full body, we need to know if there is one, and if so we need it
+	// all.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		reply(w, errorResult{err.Error()}, http.StatusInternalServerError)
@@ -45,8 +58,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn := s.GetConnFunc(r.Context())
 	defer conn.Close()
 
+	// might need to authenticate the connection with the proper user-password
+  if userPass != auth{} {
+  }
+
 	// both GET and POST are supported regardless of how data is sent (path,
-	// body, query string).
+	// body, query string). We switch on the path with any trailing slash
+	// removed.
 	switch path := r.URL.Path; strings.TrimSuffix(path, "/") {
 	case "":
 		var args []interface{}
@@ -61,13 +79,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		cmd, _ := args[0].(string)
-		res, err := conn.Do(cmd, args[1:]...)
-		if err != nil {
-			reply(w, errorResult{err.Error()}, http.StatusBadRequest)
-			return
-		}
-		reply(w, successResult{res}, http.StatusOK)
+		cmd := fmt.Sprint(args[0])
+		v, code := s.execCmd(conn, cmd, args[1:]...)
+		reply(w, v, code)
 		return
 
 	case "/pipeline":
@@ -78,7 +92,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, errorResult{"ERR failed to parse pipeline request"}, http.StatusBadRequest)
 			return
 		}
-		// TODO: execute pipeline one at a time, no atomic guarantee in upstash pipeline
+		if len(cmds) == 0 {
+			reply(w, errorResult{"ERR empty pipeline request"}, http.StatusBadRequest)
+			return
+		}
+
+		// execute pipeline one at a time, no atomic guarantee in upstash pipeline
+		var results []interface{}
+		for _, cmd := range cmds {
+			if len(cmd) == 0 {
+				results = append(results, errorResult{"ERR empty pipeline command"})
+				continue
+			}
+			cmdName := fmt.Sprint(cmd[0])
+			v, _ := s.execCmd(conn, cmdName, cmd[1:]...)
+			results = append(results, v)
+		}
+		reply(w, results, http.StatusOK)
+		return
 
 	default:
 		// the single command is made of the path, optional body and optional query
@@ -104,12 +135,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for i, v := range segments[1:] {
 			args[i] = v
 		}
-		res, err := conn.Do(segments[0], args...)
-		if err != nil {
-			reply(w, errorResult{err.Error()}, http.StatusBadRequest)
-			return
-		}
-		reply(w, successResult{res}, http.StatusOK)
+		v, code := s.execCmd(conn, segments[0], args...)
+		reply(w, v, code)
 		return
 	}
 }
@@ -120,6 +147,48 @@ type errorResult struct {
 
 type successResult struct {
 	Result interface{} `json:"result"`
+}
+
+func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{}, int) {
+	if strings.ToLower(cmd) == "acl" && len(args) > 0 && strings.ToLower(fmt.Sprint(args[0])) == "resttoken" {
+		return s.execACLRestToken(conn, cmd, args...)
+	}
+
+	res, err := conn.Do(cmd, args...)
+	if err != nil {
+		return errorResult{Error: err.Error()}, http.StatusBadRequest
+	}
+	return successResult{Result: res}, http.StatusOK
+}
+
+func (s *Server) execACLRestToken(conn Conn, cmd string, args ...interface{}) (interface{}, int) {
+	if len(args) != 3 { // RESTTOKEN <username> <password>
+		return errorResult{Error: "ERR invalid syntax. Usage: ACL RESTTOKEN username password"}, http.StatusBadRequest
+	}
+
+	user, pwd := fmt.Sprint(args[1]), fmt.Sprint(args[2])
+	// attempt a connection with username and password, and if successful,
+	// generate a token associated with it.
+	vAuth, code := s.execCmd(conn, "AUTH", user, pwd)
+	if code != http.StatusOK {
+		return vAuth, code
+	}
+
+	// auth succeeded, generate the associated token
+	res, err := conn.Do("ACL", "GENPASS")
+	if err != nil {
+		return errorResult{Error: err.Error()}, http.StatusBadRequest
+	}
+	token := res.(string)
+
+	s.mu.Lock()
+	if s.restTokens == nil {
+		s.restTokens = make(map[string]auth)
+	}
+	s.restTokens[token] = auth{user, pwd}
+	s.mu.Unlock()
+
+	return successResult{Result: res}, http.StatusOK
 }
 
 func reply(w http.ResponseWriter, v interface{}, status int) {
@@ -139,10 +208,18 @@ func requestToken(r *http.Request) string {
 	return tok
 }
 
-func (s *Server) authenticate(tok string) bool {
+func (s *Server) authenticate(tok string) (auth, bool) {
 	if tok == s.APIToken {
-		return true
+		return auth{}, true
 	}
+
 	// else look for ACL RESTTOKEN authentication...
-	return false
+	s.mu.Lock()
+	userPass, ok := s.restTokens[tok]
+	s.mu.Unlock()
+
+	if !ok {
+		return auth{}, false
+	}
+	return userPass, true
 }
