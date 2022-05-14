@@ -1,3 +1,15 @@
+// Package restserver implements an http.Handler that executes Redis commands
+// over a REST API. It aims to be compatible with the Upstash Redis REST API,
+// and as such implements its custom ACL RESTTOKEN command and returns
+// compatible payloads and status codes. It can be used e.g. as a Web server
+// for testing. See also the cmd/upstash-redis-rest-server command that
+// implements a Web server based on this package.
+//
+// Usage
+//
+// Create a Server value by setting its APIToken and GetConnFunc fields, and
+// mount it on an http.Server web server. The *Server type implements
+// http.Handler.
 package restserver
 
 import (
@@ -21,8 +33,16 @@ type Conn interface {
 	Do(commandName string, args ...interface{}) (reply interface{}, err error)
 }
 
+// Server implements an http.Handler that serves Redis commands via a REST API
+// compatible with the Upstash Redis REST API.
 type Server struct {
-	APIToken    string
+	// APIToken is the admin API token that must be used to authenticate
+	// requests, unless ACL RESTTOKEN is used to generate other valid API tokens.
+	APIToken string
+
+	// GetConnFunc must be set to a function that returns a Conn value to execute
+	// the actual commands against a Redis database. The redigo package is
+	// straightforward to use with this function signature.
 	GetConnFunc func(context.Context) Conn
 
 	mu         sync.Mutex // protects the rest token map
@@ -34,6 +54,7 @@ type auth struct {
 	Password string
 }
 
+// ServeHTTP implements the http.Handler for the REST API server.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	userPass, ok := s.authenticate(requestToken(r))
 	if !ok {
@@ -59,8 +80,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	// might need to authenticate the connection with the proper user-password
-  if userPass != auth{} {
-  }
+	if userPass != (auth{}) {
+		vAuth, code := s.execCmd(conn, "AUTH", userPass.Username, userPass.Password)
+		if code != http.StatusOK {
+			reply(w, vAuth, code)
+			return
+		}
+	}
 
 	// both GET and POST are supported regardless of how data is sent (path,
 	// body, query string). We switch on the path with any trailing slash
@@ -161,7 +187,7 @@ func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{
 	return successResult{Result: res}, http.StatusOK
 }
 
-func (s *Server) execACLRestToken(conn Conn, cmd string, args ...interface{}) (interface{}, int) {
+func (s *Server) execACLRestToken(conn Conn, _ string, args ...interface{}) (interface{}, int) {
 	if len(args) != 3 { // RESTTOKEN <username> <password>
 		return errorResult{Error: "ERR invalid syntax. Usage: ACL RESTTOKEN username password"}, http.StatusBadRequest
 	}
