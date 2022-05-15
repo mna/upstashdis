@@ -17,8 +17,9 @@ import (
 )
 
 type result struct {
-	Result interface{} `json:"result"`
-	Error  string      `json:"error"`
+	Result  interface{} `json:"result"`
+	Results []result    `json:"results"`
+	Error   string      `json:"error"`
 }
 
 func TestServer(t *testing.T) {
@@ -66,7 +67,8 @@ func TestServer(t *testing.T) {
 			require.NoError(t, err)
 			rbody = bytes.NewReader(b)
 		}
-		req := httptest.NewRequest("POST", u.String(), rbody)
+		req, err := http.NewRequest("POST", u.String(), rbody)
+		require.NoError(t, err)
 
 		if token != "" {
 			req.Header.Add("Authorization", "Bearer "+token)
@@ -74,15 +76,41 @@ func TestServer(t *testing.T) {
 
 		res, err := cli.Do(req)
 		require.NoError(t, err)
-		require.Equal(t, code, res.StatusCode)
+
+		resBody, err := io.ReadAll(res.Body)
+		require.NoError(t, err)
+
+		require.Equal(t, code, res.StatusCode, string(resBody))
 
 		var restResult result
-		require.NoError(t, json.NewDecoder(res.Body).Decode(&restResult))
+		if path == "/pipeline" {
+			require.NoError(t, json.Unmarshal(resBody, &restResult.Results))
+		} else {
+			require.NoError(t, json.Unmarshal(resBody, &restResult))
+		}
 		return restResult
 	}
 
 	t.Run("missing auth", func(t *testing.T) {
 		res := makeRequest(t, http.StatusUnauthorized, "", "/echo/a", nil)
-		require.Contains(t, res.Error, "unauthorized")
+		require.Contains(t, res.Error, "Unauthorized")
+	})
+
+	t.Run("bad token", func(t *testing.T) {
+		res := makeRequest(t, http.StatusUnauthorized, badToken, "/echo/a", nil)
+		require.Contains(t, res.Error, "Unauthorized")
+	})
+
+	t.Run("good token", func(t *testing.T) {
+		res := makeRequest(t, http.StatusOK, goodToken, "/echo/a", nil)
+		require.Empty(t, res.Error)
+		require.Equal(t, res.Result, "a")
+	})
+
+	t.Run("hgetall", func(t *testing.T) {
+		res := makeRequest(t, http.StatusOK, goodToken, "/pipeline", [][]string{{"HSET", "h1", "a", "1"}, {"HSET", "h1", "b", "2"}, {"HGETALL", "h1"}})
+		require.Empty(t, res.Error)
+		require.Len(t, res.Results, 3)
+		require.Equal(t, res.Results[2], result{Result: []interface{}{"a", "1", "b", "2"}})
 	})
 }

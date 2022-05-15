@@ -56,11 +56,14 @@ type auth struct {
 
 // ServeHTTP implements the http.Handler for the REST API server.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	fmt.Println(">>>> ", r.URL)
+
 	userPass, ok := s.authenticate(requestToken(r))
 	if !ok {
 		reply(w, errorResult{"Unauthorized"}, http.StatusUnauthorized)
 		return
 	}
+	fmt.Println(">>>> authorized", userPass)
 
 	// only GET or POST methods are allowed
 	if r.Method != "GET" && r.Method != "POST" {
@@ -68,6 +71,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Println(">>>> validmethod")
 	// read the full body, we need to know if there is one, and if so we need it
 	// all.
 	body, err := io.ReadAll(r.Body)
@@ -149,14 +153,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// if there are query values, they come last
-		qparts := strings.Split(r.URL.RawQuery, "&")
-		for _, qpart := range qparts {
-			// if the query key has a value, then it becomes 2 redis arguments, e.g.
-			// EX=100.
-			kv := strings.SplitN(qpart, "=", 2)
-			segments = append(segments, kv...)
+		if r.URL.RawQuery != "" {
+			qparts := strings.Split(r.URL.RawQuery, "&")
+			for _, qpart := range qparts {
+				// if the query key has a value, then it becomes 2 redis arguments, e.g.
+				// EX=100.
+				kv := strings.SplitN(qpart, "=", 2)
+				segments = append(segments, kv...)
+			}
 		}
 
+		fmt.Println(">>>> ", len(segments), segments)
 		args := make([]interface{}, len(segments)-1)
 		for i, v := range segments[1:] {
 			args[i] = v
@@ -176,6 +183,8 @@ type successResult struct {
 }
 
 func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{}, int) {
+	fmt.Println(">>>> execCmd ", cmd, args)
+
 	if strings.ToLower(cmd) == "acl" && len(args) > 0 && strings.ToLower(fmt.Sprint(args[0])) == "resttoken" {
 		return s.execACLRestToken(conn, cmd, args...)
 	}
@@ -184,6 +193,7 @@ func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{
 	if err != nil {
 		return errorResult{Error: err.Error()}, http.StatusBadRequest
 	}
+	fmt.Println(">>>> execCmd Res: ", res)
 	return successResult{Result: res}, http.StatusOK
 }
 
