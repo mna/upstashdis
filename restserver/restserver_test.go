@@ -51,6 +51,13 @@ func TestServerMiniredis(t *testing.T) {
 		require.Contains(t, res.Error, "Unauthorized")
 	})
 
+	t.Run("invalid method", func(t *testing.T) {
+		res := makeRequest(t, http.StatusMethodNotAllowed, goodToken, "/echo/a", nil, "")
+		// returns no body
+		require.Empty(t, res.Error)
+		require.Nil(t, res.Result)
+	})
+
 	t.Run("bad token", func(t *testing.T) {
 		res := makeRequest(t, http.StatusUnauthorized, badToken, "/echo/a", nil, "")
 		require.Contains(t, res.Error, "Unauthorized")
@@ -80,6 +87,11 @@ func TestServerMiniredis(t *testing.T) {
 	t.Run("unknown body command", func(t *testing.T) {
 		res := makeRequest(t, http.StatusBadRequest, goodToken, "/", []interface{}{"NOPE"}, "")
 		require.Contains(t, res.Error, "unknown command")
+	})
+
+	t.Run("invalid command args", func(t *testing.T) {
+		res := makeRequest(t, http.StatusBadRequest, goodToken, "/", []interface{}{"ECHO", "A", "TOOMANY", "ARGS"}, "")
+		require.Contains(t, res.Error, "wrong number of arguments")
 	})
 
 	t.Run("unknown path command", func(t *testing.T) {
@@ -215,6 +227,11 @@ func TestServerRedis(t *testing.T) {
 		require.Contains(t, res.Error, "WRONGPASS")
 	})
 
+	t.Run("acl resttoken invalid args", func(t *testing.T) {
+		res := makeRequest(t, http.StatusBadRequest, goodToken, "/acl/resttoken/user/pwd/extra/args", nil, "")
+		require.Contains(t, res.Error, "invalid syntax")
+	})
+
 	t.Run("acl resttoken unknown user", func(t *testing.T) {
 		res := makeRequest(t, http.StatusBadRequest, goodToken, "/acl/resttoken/nosuchuser/nosuchpwd", nil, "")
 		require.Contains(t, res.Error, "WRONGPASS")
@@ -263,7 +280,15 @@ func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, s
 			require.NoError(t, err)
 			rbody = bytes.NewReader(b)
 		}
-		req, err := http.NewRequest("POST", u.String(), rbody)
+
+		verb := "POST"
+
+		if code == http.StatusMethodNotAllowed {
+			verb = "DELETE"
+		} else if time.Now().UnixMicro()%2 == 1 {
+			verb = "GET"
+		}
+		req, err := http.NewRequest(verb, u.String(), rbody)
 		require.NoError(t, err)
 
 		if token != "" {
@@ -281,7 +306,7 @@ func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, s
 		var restResult result
 		if path == "/pipeline" && res.StatusCode == http.StatusOK {
 			require.NoError(t, json.Unmarshal(resBody, &restResult.Results), string(resBody))
-		} else {
+		} else if len(resBody) > 0 {
 			require.NoError(t, json.Unmarshal(resBody, &restResult))
 		}
 		return restResult
