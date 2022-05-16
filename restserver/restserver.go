@@ -209,7 +209,7 @@ func (s *Server) execACLRestToken(conn Conn, _ string, args ...interface{}) (int
 	if err != nil {
 		return errorResult{Error: err.Error()}, http.StatusBadRequest
 	}
-	token := res.(string)
+	token := string(res.([]byte))
 
 	s.mu.Lock()
 	if s.restTokens == nil {
