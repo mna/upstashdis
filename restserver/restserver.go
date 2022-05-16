@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/wI2L/jettison"
 )
 
 // Conn defines the methods required for a redis connection. It is a subset
@@ -56,14 +58,11 @@ type auth struct {
 
 // ServeHTTP implements the http.Handler for the REST API server.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	fmt.Println(">>>> ", r.URL)
-
 	userPass, ok := s.authenticate(requestToken(r))
 	if !ok {
 		reply(w, errorResult{"Unauthorized"}, http.StatusUnauthorized)
 		return
 	}
-	fmt.Println(">>>> authorized", userPass)
 
 	// only GET or POST methods are allowed
 	if r.Method != "GET" && r.Method != "POST" {
@@ -71,7 +70,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Println(">>>> validmethod")
 	// read the full body, we need to know if there is one, and if so we need it
 	// all.
 	body, err := io.ReadAll(r.Body)
@@ -163,7 +161,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		fmt.Println(">>>> ", len(segments), segments)
 		args := make([]interface{}, len(segments)-1)
 		for i, v := range segments[1:] {
 			args[i] = v
@@ -183,8 +180,6 @@ type successResult struct {
 }
 
 func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{}, int) {
-	fmt.Println(">>>> execCmd ", cmd, args)
-
 	if strings.ToLower(cmd) == "acl" && len(args) > 0 && strings.ToLower(fmt.Sprint(args[0])) == "resttoken" {
 		return s.execACLRestToken(conn, cmd, args...)
 	}
@@ -193,7 +188,6 @@ func (s *Server) execCmd(conn Conn, cmd string, args ...interface{}) (interface{
 	if err != nil {
 		return errorResult{Error: err.Error()}, http.StatusBadRequest
 	}
-	fmt.Println(">>>> execCmd Res: ", res)
 	return successResult{Result: res}, http.StatusOK
 }
 
@@ -228,10 +222,20 @@ func (s *Server) execACLRestToken(conn Conn, _ string, args ...interface{}) (int
 }
 
 func reply(w http.ResponseWriter, v interface{}, status int) {
+	var body []byte
+	if v != nil {
+		b, err := jettison.MarshalOpts(v, jettison.NoUTF8Coercion(), jettison.RawByteSlice())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		body = b
+	}
+
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	if v != nil {
-		_ = json.NewEncoder(w).Encode(v)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
 	}
 }
 
