@@ -1,6 +1,6 @@
 // Package restserver implements an http.Handler that executes Redis commands
-// over a REST API. It aims to be compatible with the Upstash Redis REST API,
-// and as such implements its custom ACL RESTTOKEN command and returns
+// over a REST API. It aims to be compatible with the Upstash Redis REST API
+// [1], and as such implements its custom ACL RESTTOKEN command and returns
 // compatible payloads and status codes. It can be used e.g. as a Web server
 // for testing. See also the cmd/upstash-redis-rest-server command that
 // implements a Web server based on this package.
@@ -10,6 +10,9 @@
 // Create a Server value by setting its APIToken and GetConnFunc fields, and
 // mount it on an http.Server web server. The *Server type implements
 // http.Handler.
+//
+//     [1]: https://docs.upstash.com/redis/features/restapi
+//
 package restserver
 
 import (

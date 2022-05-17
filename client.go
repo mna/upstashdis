@@ -1,5 +1,8 @@
 // Package upstashdis provides a client for the Upstash Redis REST API
-// interface.
+// interface [1].
+//
+//     [1]: https://docs.upstash.com/redis/features/restapi
+//
 package upstashdis
 
 import (
