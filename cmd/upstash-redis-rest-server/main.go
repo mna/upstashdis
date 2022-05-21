@@ -22,7 +22,7 @@ usage: %s [<option>...] <command> [<path>...]
 Run '%[1]s --help' for details.
 `, binName)
 
-	longUsage = fmt.Sprintf(`usage: %s --redis-addr <ADDR>
+	longUsage = fmt.Sprintf(`usage: %s --addr <ADDR> --redis-addr <ADDR>
        %[1]s -h|--help
 
 Run a web server that serves an Upstash-compatible Redis REST API and

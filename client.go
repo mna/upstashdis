@@ -41,7 +41,10 @@ type Result struct {
 	Result json.RawMessage `json:"result"`
 }
 
-// Client is an Upstash Redis REST client.
+// Client is an Upstash Redis REST client. It is safe for concurrent use as
+// long as the HTTPClient and the NewRequestFunc values are also safe for
+// concurrent use (the defaults are). The fields should be set before use and
+// should not be changed thereafter.
 type Client struct {
 	// BaseURL is the base URL of the Upstash Redis REST API.
 	BaseURL string
@@ -58,9 +61,18 @@ type Client struct {
 	// it will be used as-is, otherwise the header is set with the APIToken as
 	// Bearer value. If NewRequestFunc is nil, http.NewRequest is used.
 	NewRequestFunc func(method, url string, body io.Reader) (*http.Request, error)
+}
 
-	// the pending requests to execute
-	req [][]interface{}
+// NewRequest starts a new REST API request using this client.
+func (c *Client) NewRequest() *Request {
+	return &Request{c: c}
+}
+
+// A Request is started by calling Client.NewRequest. It is not safe for
+// concurrent use.
+type Request struct {
+	c   *Client
+	req [][]interface{} // the pending requests to execute
 }
 
 // Error represents an error returned by Redis.
@@ -90,7 +102,7 @@ func newError(msg string, ix int) *Error {
 }
 
 // Send queues a new command to be executed when Exec is called.
-func (c *Client) Send(cmd string, args ...interface{}) error {
+func (r *Request) Send(cmd string, args ...interface{}) error {
 	if cmd == "" {
 		return errors.New("upstashdis: empty command")
 	}
@@ -101,7 +113,7 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 	for i, arg := range args {
 		new[i+1] = writeArg(arg, true)
 	}
-	c.req = append(c.req, new)
+	r.req = append(r.req, new)
 	return nil
 }
 
@@ -115,14 +127,15 @@ func (c *Client) Send(cmd string, args ...interface{}) error {
 // results. If any result is an error, an error is returned but any remaining
 // results are unmarshaled. If more than one result is an error, only the first
 // one is returned. If len(dst) < number of results, the remaining results are
-// discarded. A nil dst value simply ignores that corresponding result.
+// discarded. A nil dst value simply ignores the corresponding result at that
+// position.
 //
 // The error returned will be of type *Error if it is a command that failed.
 // You may inspect its fields for more information about what failed after
 // obtaining its typed value with errors.As. It can also be of a different type
 // if e.g. the request failed due to a network error.
-func (c *Client) Exec(dst ...interface{}) error {
-	res, err := c.exec()
+func (r *Request) Exec(dst ...interface{}) error {
+	res, err := r.exec()
 	if err != nil {
 		return err
 	}
@@ -160,12 +173,12 @@ func (c *Client) Exec(dst ...interface{}) error {
 // before executing the specified command and returning its result - either as
 // the returned error if it failed, or unmarshaled into dst if it succeeded. If
 // dst is nil, the successful result is ignored.
-func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
-	if err := c.Send(cmd, args...); err != nil {
+func (r *Request) ExecOne(dst interface{}, cmd string, args ...interface{}) error {
+	if err := r.Send(cmd, args...); err != nil {
 		return err
 	}
 
-	res, err := c.exec()
+	res, err := r.exec()
 	if err != nil {
 		return err
 	}
@@ -190,11 +203,11 @@ func (c *Client) ExecOne(dst interface{}, cmd string, args ...interface{}) error
 //
 // This can be used if the caller needs to know precisely all commands that
 // failed in a pipeline (as Exec returns only the first error encountered).
-func (c *Client) ExecRaw() ([]*Result, error) {
-	return c.exec()
+func (r *Request) ExecRaw() ([]*Result, error) {
+	return r.exec()
 }
 
-func (c *Client) exec() ([]*Result, error) {
+func (r *Request) exec() ([]*Result, error) {
 	var (
 		body     bytes.Buffer
 		pipeline bool
@@ -202,38 +215,38 @@ func (c *Client) exec() ([]*Result, error) {
 	)
 
 	// create the request (pipeline if > 1), make the call
-	switch len(c.req) {
+	switch len(r.req) {
 	case 0:
 		return nil, errors.New("upstashdis: no command to execute")
 	case 1:
 		// single command
-		err = json.NewEncoder(&body).Encode(c.req[0])
+		err = json.NewEncoder(&body).Encode(r.req[0])
 	default:
 		// pipeline
-		err = json.NewEncoder(&body).Encode(c.req)
+		err = json.NewEncoder(&body).Encode(r.req)
 		pipeline = true
 	}
-	c.req = c.req[:0]
+	r.req = r.req[:0]
 
 	if err != nil {
 		return nil, err
 	}
 
-	return c.makeRequest(&body, pipeline)
+	return r.makeRequest(&body, pipeline)
 }
 
-func (c *Client) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) {
-	httpCli := c.HTTPClient
+func (r *Request) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) {
+	httpCli := r.c.HTTPClient
 	if httpCli == nil {
 		httpCli = http.DefaultClient
 	}
 
-	newReq := c.NewRequestFunc
+	newReq := r.c.NewRequestFunc
 	if newReq == nil {
 		newReq = http.NewRequest
 	}
 
-	surl := c.BaseURL
+	surl := r.c.BaseURL
 	if pipeline {
 		purl, err := url.Parse(surl)
 		if err != nil {
@@ -247,7 +260,7 @@ func (c *Client) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) {
 		return nil, err
 	}
 	if req.Header.Get("Authorization") == "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIToken)
+		req.Header.Set("Authorization", "Bearer "+r.c.APIToken)
 	}
 
 	res, err := httpCli.Do(req)
