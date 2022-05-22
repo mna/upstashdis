@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/mna/mainer"
+	"github.com/mna/upstashdis/restserver"
 )
 
 const binName = "upstash-redis-rest-server"
@@ -90,8 +92,17 @@ func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
 	}
 
 	// TODO: start the web server
+	usrv := &restserver.Server{}
 
 	return mainer.Success
+}
+
+func makePool(addr string) *redis.Pool {
+	return &redis.Pool{
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", addr)
+		},
+	}
 }
 
 func main() {
