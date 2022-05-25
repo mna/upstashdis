@@ -23,7 +23,7 @@ $ go install github.com/mna/upstashdis/cmd/upstash-redis-rest-server@latest
 
 The [code documentation](https://pkg.go.dev/github.com/mna/upstashdis) is the canonical source for the Go packages documentation.
 
-The `upstash-redis-rest-server` command documentation is available by running the command with the `--help` flag and is shown here for reference:
+The `upstash-redis-rest-server` command documentation is available by running the command with the `--help` flag and is shown here as a convenience:
 
 ```
 usage: upstash-redis-rest-server --addr <ADDR> --redis-addr <ADDR> [--api-token <TOKEN>]
