@@ -270,6 +270,22 @@ func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, s
 		require.NoError(t, err)
 		u.Path = path
 
+		var tokLoc string
+		if token != "" {
+			// randomly set in header or in query string
+			if time.Now().UnixNano()%2 == 0 {
+				tokLoc = "query"
+			} else {
+				tokLoc = "header"
+			}
+		}
+
+		if tokLoc == "query" {
+			if rawQuery != "" {
+				rawQuery += "&"
+			}
+			rawQuery += "_token=" + token
+		}
 		if rawQuery != "" {
 			u.RawQuery = rawQuery
 		}
@@ -291,7 +307,7 @@ func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, s
 		req, err := http.NewRequest(verb, u.String(), rbody)
 		require.NoError(t, err)
 
-		if token != "" {
+		if tokLoc == "header" {
 			req.Header.Add("Authorization", "Bearer "+token)
 		}
 

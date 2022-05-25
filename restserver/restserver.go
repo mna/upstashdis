@@ -160,6 +160,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// if the query key has a value, then it becomes 2 redis arguments, e.g.
 				// EX=100.
 				kv := strings.SplitN(qpart, "=", 2)
+				// ignore the _token query parameter, this is not part of the command
+				if kv[0] == "_token" {
+					continue
+				}
 				segments = append(segments, kv...)
 			}
 		}

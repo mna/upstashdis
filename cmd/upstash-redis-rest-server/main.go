@@ -7,10 +7,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
+	"net/http"
 	"os"
+	"strings"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gomodule/redigo/redis"
 	"github.com/mna/mainer"
 	"github.com/mna/upstashdis/restserver"
@@ -20,11 +25,11 @@ const binName = "upstash-redis-rest-server"
 
 var (
 	shortUsage = fmt.Sprintf(`
-usage: %s [<option>...] <command> [<path>...]
+usage: %s --addr <ADDR> --redis-addr <ADDR> [--api-token <TOKEN>]
 Run '%[1]s --help' for details.
 `, binName)
 
-	longUsage = fmt.Sprintf(`usage: %s --addr <ADDR> --redis-addr <ADDR>
+	longUsage = fmt.Sprintf(`usage: %s --addr <ADDR> --redis-addr <ADDR> [--api-token <TOKEN>]
        %[1]s -h|--help
 
 Run a web server that serves an Upstash-compatible Redis REST API and
@@ -35,6 +40,9 @@ Valid flag options are:
        -h --help                 Show this help.
        -r --redis-addr ADDR      Use the Redis instance running at this
                                  ADDR to execute commands.
+       -t --api-token TOKEN      API token to accept as authorized. Can
+                                 also be set via the environment variable
+                                 UPSTASH_REDIS_REST_SERVER_API_TOKEN.
 
 The redis instance should be version 6 and above for better
 compatibility.
@@ -51,9 +59,10 @@ More information on the upstashdis repository:
 )
 
 type cmd struct {
-	Addr      string `flag:"a,addr"`
-	RedisAddr string `flag:"r,redis-addr"`
-	Help      bool   `flag:"h,help"`
+	Addr      string `flag:"a,addr" ignored:"true"`
+	APIToken  string `flag:"t,api-token"`
+	RedisAddr string `flag:"r,redis-addr" ignored:"true"`
+	Help      bool   `flag:"h,help" ignored:"true"`
 
 	args []string
 }
@@ -80,7 +89,10 @@ func (c *cmd) Validate() error {
 }
 
 func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
-	var p mainer.Parser
+	p := mainer.Parser{
+		EnvVars:   true,
+		EnvPrefix: strings.ReplaceAll(binName, "-", "_"),
+	}
 	if err := p.Parse(args, c); err != nil {
 		fmt.Fprintf(stdio.Stderr, "invalid arguments: %s\n%s", err, shortUsage)
 		return mainer.InvalidArgs
@@ -91,9 +103,33 @@ func (c *cmd) Main(args []string, stdio mainer.Stdio) mainer.ExitCode {
 		return mainer.Success
 	}
 
-	// TODO: start the web server
-	usrv := &restserver.Server{}
+	// start miniredis is requested
+	raddr := c.RedisAddr
+	if raddr == "memory" {
+		miniRed, err := miniredis.Run()
+		if err != nil {
+			fmt.Fprintf(stdio.Stderr, "failed to start miniredis: %s\n", err)
+			return mainer.Failure
+		}
+		defer miniRed.Close()
+		raddr = miniRed.Addr()
+	}
 
+	// configure the REST server
+	pool := makePool(raddr)
+	usrv := &restserver.Server{
+		APIToken: c.APIToken,
+		GetConnFunc: func(ctx context.Context) restserver.Conn {
+			return pool.Get()
+		},
+	}
+
+	// start the web server
+	log.Printf("listening on %s...", c.Addr)
+	if err := http.ListenAndServe(c.Addr, usrv); err != nil {
+		fmt.Fprintf(stdio.Stderr, "web server error: %s\n", err)
+		return mainer.Failure
+	}
 	return mainer.Success
 }
 
