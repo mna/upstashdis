@@ -25,6 +25,13 @@ func TestUpstash(t *testing.T) {
 		require.Contains(t, err.Error(), "empty command")
 	})
 
+	t.Run("override token with invalid one", func(t *testing.T) {
+		req := cli.NewRequestWithToken("nosuchtoken")
+		err := req.ExecOne(nil, "ECHO", "a")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Unauthorized")
+	})
+
 	t.Run("empty ExecOne", func(t *testing.T) {
 		var got string
 		req := cli.NewRequest()

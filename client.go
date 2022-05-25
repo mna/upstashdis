@@ -58,20 +58,30 @@ type Client struct {
 
 	// NewRequestFunc is the function used to create the HTTP Request for each
 	// REST API request. If the returned request has an Authorization header set,
-	// it will be used as-is, otherwise the header is set with the APIToken as
-	// Bearer value. If NewRequestFunc is nil, http.NewRequest is used.
+	// it will be used as-is, otherwise the header is set with the APIToken (or
+	// the token provided to NewRequestWithToken) as Bearer value. If
+	// NewRequestFunc is nil, http.NewRequest is used.
 	NewRequestFunc func(method, url string, body io.Reader) (*http.Request, error)
 }
 
 // NewRequest starts a new REST API request using this client.
 func (c *Client) NewRequest() *Request {
-	return &Request{c: c}
+	return &Request{c: c, tok: c.APIToken}
+}
+
+// NewRequestWithToken starts a new REST API request using this client, but
+// overrides the client's APIToken with the provided token. This can be useful
+// for when an ACL RESTTOKEN-generated token should be used instead of the
+// generic one, while still sharing the same client configuration.
+func (c *Client) NewRequestWithToken(token string) *Request {
+	return &Request{c: c, tok: token}
 }
 
 // A Request is started by calling Client.NewRequest. It is not safe for
 // concurrent use.
 type Request struct {
 	c   *Client
+	tok string
 	req [][]interface{} // the pending requests to execute
 }
 
@@ -260,7 +270,7 @@ func (r *Request) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) 
 		return nil, err
 	}
 	if req.Header.Get("Authorization") == "" {
-		req.Header.Set("Authorization", "Bearer "+r.c.APIToken)
+		req.Header.Set("Authorization", "Bearer "+r.tok)
 	}
 
 	res, err := httpCli.Do(req)
