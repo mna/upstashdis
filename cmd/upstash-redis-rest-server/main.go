@@ -30,7 +30,7 @@ Run '%[1]s --help' for details.
 `, binName)
 
 	longUsage = fmt.Sprintf(`usage: %s --addr <ADDR> --redis-addr <ADDR> [--api-token <TOKEN>]
-       %[1]s -h|--help
+       %[1]s --help
 
 Run a web server that serves an Upstash-compatible Redis REST API and
 connects to a running Redis instance to execute commands.
@@ -60,7 +60,7 @@ More information on the upstashdis repository:
 
 type cmd struct {
 	Addr      string `flag:"a,addr" ignored:"true"`
-	APIToken  string `flag:"t,api-token"`
+	APIToken  string `flag:"t,api-token" envconfig:"api_token"`
 	RedisAddr string `flag:"r,redis-addr" ignored:"true"`
 	Help      bool   `flag:"h,help" ignored:"true"`
 
