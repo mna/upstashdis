@@ -185,7 +185,7 @@ func TestServerMiniredis(t *testing.T) {
 	})
 }
 
-func TestServerRedis(t *testing.T) {
+func TestServerRedisPool(t *testing.T) {
 	redisAddr := os.Getenv("UPSTASHDIS_TEST_REDIS_ADDR")
 	if redisAddr == "" {
 		t.Skip("environment variable not set, set UPSTASHDIS_TEST_REDIS_ADDR to a valid running Redis 6+ instance address")
@@ -264,6 +264,49 @@ func TestServerRedis(t *testing.T) {
 	})
 }
 
+func TestServerRedisDial(t *testing.T) {
+	redisAddr := os.Getenv("UPSTASHDIS_TEST_REDIS_ADDR")
+	if redisAddr == "" {
+		t.Skip("environment variable not set, set UPSTASHDIS_TEST_REDIS_ADDR to a valid running Redis 6+ instance address")
+	}
+
+	const goodToken = "_token_"
+	server := &Server{
+		APIToken: goodToken,
+		GetConnFunc: func(ctx context.Context) Conn {
+			conn, err := redis.DialContext(ctx, "tcp", redisAddr)
+			if err != nil {
+				return failedConn{err: err}
+			}
+			return conn
+		},
+	}
+
+	httpsrv := httptest.NewServer(server)
+	defer httpsrv.Close()
+
+	cli := &http.Client{Timeout: 5 * time.Second}
+	makeRequest := genMakeRequestFunc(httpsrv.URL, cli)
+
+	t.Run("dial valid address", func(t *testing.T) {
+		res := makeRequest(t, http.StatusOK, goodToken, "/echo/a", nil, "")
+		require.Empty(t, res.Error)
+		require.Equal(t, res.Result, "a")
+	})
+
+	t.Run("dial invalid address", func(t *testing.T) {
+		tmpsrv := httptest.NewServer(nil)
+		purl, _ := url.Parse(tmpsrv.URL)
+		redisAddr = purl.Host
+		defer func() { redisAddr = os.Getenv("UPSTASHDIS_TEST_REDIS_ADDR") }()
+		tmpsrv.Close()
+
+		res := makeRequest(t, http.StatusBadRequest, goodToken, "/echo/a", nil, "")
+		require.NotEmpty(t, res.Error)
+		require.Contains(t, res.Error, "connection refused")
+	})
+}
+
 func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, string, string, interface{}, string) result {
 	return func(t *testing.T, code int, token, path string, body interface{}, rawQuery string) result {
 		u, err := url.Parse(srvURL)
@@ -327,4 +370,18 @@ func genMakeRequestFunc(srvURL string, cli *http.Client) func(*testing.T, int, s
 		}
 		return restResult
 	}
+}
+
+// create a failed connection type for when Dial fails to get a connection.
+type failedConn struct {
+	err error
+}
+
+// implement the restserver.Conn interface, returning the error for each call.
+func (f failedConn) Do(_ string, _ ...interface{}) (interface{}, error) {
+	return nil, f.err
+}
+
+func (f failedConn) Close() error {
+	return f.err
 }
