@@ -77,6 +77,16 @@ func (c *Client) NewRequestWithToken(token string) *Request {
 	return &Request{c: c, tok: token}
 }
 
+// CloneWithToken returns a copy of c with the APIToken field replaced with the
+// provided token. This can be useful to use an ACL RESTTOKEN-generated token
+// for multiple requests while sharing the rest of the client configuration
+// with the base client.
+func (c *Client) CloneWithToken(token string) *Client {
+	clone := *c
+	clone.APIToken = token
+	return &clone
+}
+
 // A Request is started by calling Client.NewRequest. It is not safe for
 // concurrent use.
 type Request struct {

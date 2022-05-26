@@ -32,6 +32,18 @@ func TestUpstash(t *testing.T) {
 		require.Contains(t, err.Error(), "Unauthorized")
 	})
 
+	t.Run("clone client", func(t *testing.T) {
+		cli2 := cli.CloneWithToken("nosuchtoken")
+		req := cli2.NewRequest()
+		err := req.ExecOne(nil, "ECHO", "a")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "Unauthorized")
+
+		req = cli2.NewRequestWithToken(tok)
+		err = req.ExecOne(nil, "ECHO", "a")
+		require.NoError(t, err)
+	})
+
 	t.Run("empty ExecOne", func(t *testing.T) {
 		var got string
 		req := cli.NewRequest()
