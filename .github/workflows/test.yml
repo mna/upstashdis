@@ -4,6 +4,9 @@ env:
   GOPROXY: https://proxy.golang.org,direct
 jobs:
   test:
+    env:
+      UPSTASHDIS_TEST_REDIS_ADDR: localhost:6379
+
     strategy:
       matrix:
         go-version: [1.18.x]
@@ -15,6 +18,11 @@ jobs:
       uses: actions/setup-go@v2
       with:
         go-version: ${{ matrix.go-version }}
+
+    - name: Install Redis
+      uses: supercharge/redis-github-action@1.4.0
+      with:
+        redis-version: 6
 
     - name: Checkout code
       uses: actions/checkout@v2
