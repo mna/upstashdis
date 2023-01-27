@@ -1,12 +1,12 @@
 // Package upstashdis provides a client for the Upstash Redis REST API
 // interface [1].
 //
-//     [1]: https://docs.upstash.com/redis/features/restapi
-//
+//	[1]: https://docs.upstash.com/redis/features/restapi
 package upstashdis
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -283,6 +283,11 @@ func (r *Request) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) 
 		req.Header.Set("Authorization", "Bearer "+r.tok)
 	}
 
+	var decode = false
+	if req.Header.Get("Upstash-Encoding") == "base64" {
+		decode = true
+	}
+
 	res, err := httpCli.Do(req)
 	if err != nil {
 		return nil, err
@@ -320,7 +325,18 @@ func (r *Request) makeRequest(body io.Reader, pipeline bool) ([]*Result, error) 
 			results = []*Result{&result}
 		}
 	}
+	if decode {
+		for _, r := range results {
+			if string(r.Result) == "OK" {
+				r.Result = decodeResult(*r)
+			}
+		}
+	}
 	return results, err
+}
+
+func decodeResult(r Result) []byte {
+	return []byte(base64.StdEncoding.EncodeToString(r.Result))
 }
 
 // adjusted from redigo's internal helper function.

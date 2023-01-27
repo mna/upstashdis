@@ -1,0 +1,1 @@
+docker run --rm --name upstash -p 6379:6379 redis:7.0.8-alpine
